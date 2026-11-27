@@ -76,6 +76,17 @@ describe("plainHeadingText", () => {
   });
 
   it("decodes entities the way the renderer shows them", () => {
-    expect(plainHeadingText("Q&amp;A &lt;tags&gt; &#169;")).toBe("Q&A <tags> ©");
+    expect(plainHeadingText("Q&amp;A &lt;tags&gt; &#169; &copy; &hellip;")).toBe(
+      "Q&A <tags> © © …",
+    );
+  });
+
+  it("replaces out-of-range numeric references instead of throwing", () => {
+    expect(plainHeadingText("Big &#1114112; &#x110000; &#0;")).toBe("Big � � �");
+    expect(() => buildMarkdownOutline([chunk("# &#99999999999;")])).not.toThrow();
+  });
+
+  it("reads an image as its alt text", () => {
+    expect(plainHeadingText("![Diagram](diagram.png) overview")).toBe("Diagram overview");
   });
 });

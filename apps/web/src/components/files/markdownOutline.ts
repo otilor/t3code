@@ -1,5 +1,6 @@
 import type { MarkdownChunk } from "@t3tools/shared/markdownChunks";
 import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
+import { decodeHTMLStrict } from "entities";
 
 export interface MarkdownOutlineEntry {
   readonly level: number;
@@ -18,14 +19,6 @@ const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
 const PARAGRAPH_LINE = /^ {0,3}(?![>#*+\-|]|\d+[.)]\s|`{3}|~{3})\S/;
 const AUTOLINK = /<((?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)|(?:[^\s<>@]+@[^\s<>@]+))>/g;
-const ENTITIES: Readonly<Record<string, string>> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-};
 
 /** Heading text as it reads, without inline Markdown syntax. */
 export function plainHeadingText(source: string): string {
@@ -36,12 +29,7 @@ export function plainHeadingText(source: string): string {
     .replace(/<\/?[A-Za-z][^>]*>/g, "")
     .replace(/(\*\*|__|\*|_|~~|`)(.+?)\1/g, "$2")
     .replace(/\\([\\`*_{}[\]()#+\-.!~|<>])/g, "$1")
-    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, name: string) => {
-      if (name[0] !== "#") return ENTITIES[name.toLowerCase()] ?? match;
-      const code =
-        name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : Number(name.slice(1));
-      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
-    })
+    .replace(/&(?:#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (match) => decodeHTMLStrict(match))
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -94,6 +82,32 @@ export function buildMarkdownOutline(
   return entries;
 }
 
+/** A rendered heading's text as the source scan reads it, so the two can be compared. */
+function renderedHeadingText(heading: HTMLElement): string {
+  let text = "";
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.nodeValue ?? "";
+      return;
+    }
+    if (!(node instanceof Element)) return;
+    // Media widgets render their own chrome; the Markdown they came from is kept on the element.
+    const source = node.getAttribute("data-markdown-copy");
+    if (source !== null) {
+      text += plainHeadingText(source);
+      return;
+    }
+    if (node.hasAttribute("data-thread-find-ignore")) return;
+    if (node instanceof HTMLImageElement) {
+      text += node.alt;
+      return;
+    }
+    for (const child of node.childNodes) visit(child);
+  };
+  for (const child of heading.childNodes) visit(child);
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /** Finds an entry among a chunk's rendered headings by its text, so skipped headings cannot shift it. */
 export function findRenderedHeading(
   chunkElement: Element,
@@ -101,7 +115,7 @@ export function findRenderedHeading(
 ): HTMLElement | null {
   let remaining = entry.occurrence;
   for (const heading of chunkElement.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) {
-    if ((heading.textContent ?? "").replace(/\s+/g, " ").trim() !== entry.text) continue;
+    if (renderedHeadingText(heading) !== entry.text) continue;
     if (remaining === 0) return heading;
     remaining -= 1;
   }
