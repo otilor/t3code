@@ -1,11 +1,23 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { useRef, type KeyboardEventHandler, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useRef,
+  useState,
+  type KeyboardEventHandler,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { normalizeMarkdownFragmentId } from "~/components/chat/markdownFragments";
 import { Spinner } from "~/components/ui/spinner";
+import { cn } from "~/lib/utils";
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
+import {
+  buildMarkdownOutline,
+  findRenderedHeading,
+  type MarkdownOutlineEntry,
+} from "./markdownOutline";
+import { MarkdownOutlineRail } from "./MarkdownOutlineRail";
 import {
   buildMarkdownFootnotesSection,
   findFootnoteRefChunkIndex,
@@ -21,6 +33,8 @@ const ESTIMATED_LINE_PX = 24;
 const MAX_SAVED_POSITIONS = 100;
 const FOOTNOTE_TARGET_ID = /^fn-\d+$/;
 const FOOTNOTE_REF_ID = /^fnref-(\d+)(?:-(\d+))?$/;
+/** A heading counts as the current section once it is this close to the top. */
+const ACTIVE_HEADING_OFFSET_PX = 48;
 
 const CHUNK_FOOTNOTES_OMIT: MarkdownExtensions = { footnotes: "omit" };
 const CHUNK_FOOTNOTES_OMIT_SEEDED: MarkdownExtensions = { footnotes: "omit-seeded" };
@@ -86,6 +100,63 @@ export function ChunkedMarkdown(props: {
   }
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
+  const outline = buildMarkdownOutline(chunks);
+  const [activeHeading, setActiveHeading] = useState(0);
+  const activeFrameRef = useRef<number | null>(null);
+
+  const findHeading = (entry: MarkdownOutlineEntry): HTMLElement | null => {
+    const chunk = containerRef.current?.querySelector(
+      `[data-markdown-chunk="${entry.chunkIndex}"]`,
+    );
+    return chunk ? findRenderedHeading(chunk, entry) : null;
+  };
+
+  const updateActiveHeading = () => {
+    const container = containerRef.current;
+    const list = listRef.current?.getState();
+    if (!container || !list || outline.length === 0) return;
+    const threshold = container.getBoundingClientRect().top + ACTIVE_HEADING_OFFSET_PX;
+    let active = 0;
+    for (const [index, entry] of outline.entries()) {
+      // Pieces before the first visible one are wholly above the view.
+      if (entry.chunkIndex < list.start) {
+        active = index;
+        continue;
+      }
+      const heading = findHeading(entry);
+      // A heading the source scan read differently from the renderer is skipped, not guessed.
+      if (!heading) {
+        if (entry.chunkIndex > list.end) break;
+        continue;
+      }
+      if (heading.getBoundingClientRect().top > threshold) break;
+      active = index;
+    }
+    setActiveHeading(active);
+  };
+
+  const scheduleActiveHeadingUpdate = () => {
+    if (activeFrameRef.current !== null) return;
+    activeFrameRef.current = requestAnimationFrame(() => {
+      activeFrameRef.current = null;
+      updateActiveHeading();
+    });
+  };
+
+  const jumpToHeading = (index: number) => {
+    const entry = outline[index];
+    if (!entry) return;
+    setActiveHeading(index);
+    const mounted = findHeading(entry);
+    if (mounted) {
+      mounted.scrollIntoView({ block: "start" });
+      return;
+    }
+    // Off-screen pieces are not rendered, so bring the piece in first.
+    void listRef.current
+      ?.scrollToIndex({ index: entry.chunkIndex, viewPosition: 0, animated: false })
+      .then(() => findHeading(entry)?.scrollIntoView({ block: "start" }));
+  };
   const positionKey = JSON.stringify([
     props.threadRef.environmentId,
     props.threadRef.threadId,
@@ -159,6 +230,10 @@ export function ChunkedMarkdown(props: {
       });
   };
 
+  const showOutline = outline.length > 1;
+  // The outline sits over the top-left corner, so the text starts clear of it.
+  const proseClassName = showOutline ? "mx-auto max-w-4xl pr-6 pl-20" : "mx-auto max-w-4xl px-6";
+
   const extraData = props.footnotes
     ? `${props.definitions}\0${props.footnotes.stubs}\0${props.footnotes.definitions}\0${props.footnotes.chunkRefs.map((refs) => refs.join(",")).join("|")}`
     : props.definitions;
@@ -168,7 +243,7 @@ export function ChunkedMarkdown(props: {
       ref={containerRef}
       // Clicking the text focuses the preview, so Select All stays inside it.
       tabIndex={-1}
-      className="flex min-h-0 flex-1 flex-col outline-none"
+      className="relative flex min-h-0 flex-1 flex-col outline-none"
       onClickCapture={handleFragmentClickCapture}
       onKeyDown={props.onKeyDown}
       onCopy={(event) => {
@@ -203,7 +278,10 @@ export function ChunkedMarkdown(props: {
             viewOffset: saved.viewOffset,
           },
         })}
+        // A restored reading position can start mid-document.
+        onLoad={scheduleActiveHeadingUpdate}
         onScroll={() => {
+          scheduleActiveHeadingUpdate();
           const list = listRef.current?.getState();
           if (!list) return;
           savedPositions.delete(positionKey);
@@ -233,7 +311,7 @@ export function ChunkedMarkdown(props: {
                   relativePath={props.relativePath}
                   threadRef={props.threadRef}
                   workspaceMutationId={props.workspaceMutationId}
-                  className="mx-auto max-w-4xl px-6"
+                  className={proseClassName}
                   extensions={CHUNK_FOOTNOTES_ONLY}
                   onTaskListChange={
                     onTaskListChange &&
@@ -252,7 +330,9 @@ export function ChunkedMarkdown(props: {
             return (
               <div className="pb-5">
                 {/* One block this long (a huge fence or HTML block) is too slow to parse. */}
-                <pre className="mx-auto max-w-4xl overflow-x-auto px-6 font-mono text-xs whitespace-pre">
+                <pre
+                  className={cn(proseClassName, "overflow-x-auto font-mono text-xs whitespace-pre")}
+                >
                   {item.chunk.text}
                 </pre>
               </div>
@@ -271,14 +351,14 @@ export function ChunkedMarkdown(props: {
                 ? CHUNK_FOOTNOTES_OMIT
                 : undefined;
           return (
-            <div className="pb-5">
+            <div className="pb-5" data-markdown-chunk={item.index}>
               <FileMarkdownPreview
                 text={prepared.text}
                 cwd={props.cwd}
                 relativePath={props.relativePath}
                 threadRef={props.threadRef}
                 workspaceMutationId={props.workspaceMutationId}
-                className="mx-auto max-w-4xl px-6"
+                className={proseClassName}
                 extensions={extensions}
                 onTaskListChange={
                   onTaskListChange &&
@@ -293,6 +373,13 @@ export function ChunkedMarkdown(props: {
           );
         }}
       />
+      {showOutline ? (
+        <MarkdownOutlineRail
+          entries={outline}
+          activeIndex={activeHeading}
+          onSelect={jumpToHeading}
+        />
+      ) : null}
     </div>
   );
 }
