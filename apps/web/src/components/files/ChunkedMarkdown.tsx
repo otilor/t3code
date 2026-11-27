@@ -9,6 +9,7 @@ import {
 
 import { normalizeMarkdownFragmentId } from "~/components/chat/markdownFragments";
 import { Spinner } from "~/components/ui/spinner";
+import { cn } from "~/lib/utils";
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
 import { buildMarkdownOutline, type MarkdownOutlineEntry } from "./markdownOutline";
@@ -220,6 +221,10 @@ export function ChunkedMarkdown(props: {
       });
   };
 
+  const showOutline = outline.length > 1;
+  // The outline sits over the top-left corner, so the text starts clear of it.
+  const proseClassName = showOutline ? "mx-auto max-w-4xl pr-6 pl-20" : "mx-auto max-w-4xl px-6";
+
   const extraData = props.footnotes
     ? `${props.definitions}\0${props.footnotes.stubs}\0${props.footnotes.definitions}\0${props.footnotes.chunkRefs.map((refs) => refs.join(",")).join("|")}`
     : props.definitions;
@@ -297,7 +302,7 @@ export function ChunkedMarkdown(props: {
                   relativePath={props.relativePath}
                   threadRef={props.threadRef}
                   workspaceMutationId={props.workspaceMutationId}
-                  className="mx-auto max-w-4xl px-6"
+                  className={proseClassName}
                   extensions={CHUNK_FOOTNOTES_ONLY}
                   onTaskListChange={
                     onTaskListChange &&
@@ -316,7 +321,9 @@ export function ChunkedMarkdown(props: {
             return (
               <div className="pb-5">
                 {/* One block this long (a huge fence or HTML block) is too slow to parse. */}
-                <pre className="mx-auto max-w-4xl overflow-x-auto px-6 font-mono text-xs whitespace-pre">
+                <pre
+                  className={cn(proseClassName, "overflow-x-auto font-mono text-xs whitespace-pre")}
+                >
                   {item.chunk.text}
                 </pre>
               </div>
@@ -342,7 +349,7 @@ export function ChunkedMarkdown(props: {
                 relativePath={props.relativePath}
                 threadRef={props.threadRef}
                 workspaceMutationId={props.workspaceMutationId}
-                className="mx-auto max-w-4xl px-6"
+                className={proseClassName}
                 extensions={extensions}
                 onTaskListChange={
                   onTaskListChange &&
@@ -357,7 +364,7 @@ export function ChunkedMarkdown(props: {
           );
         }}
       />
-      {outline.length > 1 ? (
+      {showOutline ? (
         <MarkdownOutlineRail
           entries={outline}
           activeIndex={activeHeading}
