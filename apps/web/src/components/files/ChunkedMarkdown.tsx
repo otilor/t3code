@@ -1,11 +1,18 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { useRef, type KeyboardEventHandler, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useRef,
+  useState,
+  type KeyboardEventHandler,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { normalizeMarkdownFragmentId } from "~/components/chat/markdownFragments";
 import { Spinner } from "~/components/ui/spinner";
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
+import { buildMarkdownOutline, type MarkdownOutlineEntry } from "./markdownOutline";
+import { MarkdownOutlineRail } from "./MarkdownOutlineRail";
 import {
   buildMarkdownFootnotesSection,
   findFootnoteRefChunkIndex,
@@ -21,6 +28,9 @@ const ESTIMATED_LINE_PX = 24;
 const MAX_SAVED_POSITIONS = 100;
 const FOOTNOTE_TARGET_ID = /^fn-\d+$/;
 const FOOTNOTE_REF_ID = /^fnref-(\d+)(?:-(\d+))?$/;
+/** A heading counts as the current section once it is this close to the top. */
+const ACTIVE_HEADING_OFFSET_PX = 48;
+const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
 
 const CHUNK_FOOTNOTES_OMIT: MarkdownExtensions = { footnotes: "omit" };
 const CHUNK_FOOTNOTES_OMIT_SEEDED: MarkdownExtensions = { footnotes: "omit-seeded" };
@@ -86,6 +96,57 @@ export function ChunkedMarkdown(props: {
   }
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
+  const outline = buildMarkdownOutline(chunks);
+  const [activeHeading, setActiveHeading] = useState(0);
+  const activeFrameRef = useRef<number | null>(null);
+
+  const findHeading = (entry: MarkdownOutlineEntry): HTMLElement | null =>
+    containerRef.current
+      ?.querySelector(`[data-markdown-chunk="${entry.chunkIndex}"]`)
+      ?.querySelectorAll<HTMLElement>(HEADING_SELECTOR)
+      .item(entry.ordinal) ?? null;
+
+  const updateActiveHeading = () => {
+    const container = containerRef.current;
+    const list = listRef.current?.getState();
+    if (!container || !list || outline.length === 0) return;
+    const threshold = container.getBoundingClientRect().top + ACTIVE_HEADING_OFFSET_PX;
+    let active = 0;
+    for (const [index, entry] of outline.entries()) {
+      // Pieces before the first visible one are wholly above the view.
+      if (entry.chunkIndex < list.start) {
+        active = index;
+        continue;
+      }
+      const heading = findHeading(entry);
+      if (!heading || heading.getBoundingClientRect().top > threshold) break;
+      active = index;
+    }
+    setActiveHeading(active);
+  };
+
+  const scheduleActiveHeadingUpdate = () => {
+    if (activeFrameRef.current !== null) return;
+    activeFrameRef.current = requestAnimationFrame(() => {
+      activeFrameRef.current = null;
+      updateActiveHeading();
+    });
+  };
+
+  const jumpToHeading = (index: number) => {
+    const entry = outline[index];
+    if (!entry) return;
+    setActiveHeading(index);
+    const mounted = findHeading(entry);
+    if (mounted) {
+      mounted.scrollIntoView({ block: "start" });
+      return;
+    }
+    // Off-screen pieces are not rendered, so bring the piece in first.
+    void listRef.current
+      ?.scrollToIndex({ index: entry.chunkIndex, viewPosition: 0, animated: false })
+      .then(() => findHeading(entry)?.scrollIntoView({ block: "start" }));
+  };
   const positionKey = JSON.stringify([
     props.threadRef.environmentId,
     props.threadRef.threadId,
@@ -168,7 +229,7 @@ export function ChunkedMarkdown(props: {
       ref={containerRef}
       // Clicking the text focuses the preview, so Select All stays inside it.
       tabIndex={-1}
-      className="flex min-h-0 flex-1 flex-col outline-none"
+      className="relative flex min-h-0 flex-1 flex-col outline-none"
       onClickCapture={handleFragmentClickCapture}
       onKeyDown={props.onKeyDown}
       onCopy={(event) => {
@@ -203,7 +264,10 @@ export function ChunkedMarkdown(props: {
             viewOffset: saved.viewOffset,
           },
         })}
+        // A restored reading position can start mid-document.
+        onLoad={scheduleActiveHeadingUpdate}
         onScroll={() => {
+          scheduleActiveHeadingUpdate();
           const list = listRef.current?.getState();
           if (!list) return;
           savedPositions.delete(positionKey);
@@ -271,7 +335,7 @@ export function ChunkedMarkdown(props: {
                 ? CHUNK_FOOTNOTES_OMIT
                 : undefined;
           return (
-            <div className="pb-5">
+            <div className="pb-5" data-markdown-chunk={item.index}>
               <FileMarkdownPreview
                 text={prepared.text}
                 cwd={props.cwd}
@@ -293,6 +357,13 @@ export function ChunkedMarkdown(props: {
           );
         }}
       />
+      {outline.length > 1 ? (
+        <MarkdownOutlineRail
+          entries={outline}
+          activeIndex={activeHeading}
+          onSelect={jumpToHeading}
+        />
+      ) : null}
     </div>
   );
 }
