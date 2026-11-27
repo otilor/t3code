@@ -1,28 +1,47 @@
 import type { MarkdownChunk } from "@t3tools/shared/markdownChunks";
+import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
 
 export interface MarkdownOutlineEntry {
   readonly level: number;
+  /** The heading as it reads, which is also how it is found among the rendered headings. */
   readonly text: string;
   /** The chunk that renders this heading. */
   readonly chunkIndex: number;
-  /** Which heading of its chunk this is, so it can be found among the rendered h1–h6. */
-  readonly ordinal: number;
+  /** Earlier headings in the same chunk with the same text. */
+  readonly occurrence: number;
 }
 
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+// Same opener rule as the Markdown splitter: a backtick fence's info string has no backtick.
+const FENCE_OPEN = /^ {0,3}(`{3,}(?![^`\n]*`)|~{3,})/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
 const PARAGRAPH_LINE = /^ {0,3}(?![>#*+\-|]|\d+[.)]\s|`{3}|~{3})\S/;
-const FRONTMATTER = /^(?:﻿)?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/;
+const AUTOLINK = /<((?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*)|(?:[^\s<>@]+@[^\s<>@]+))>/g;
+const ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
 
 /** Heading text as it reads, without inline Markdown syntax. */
 export function plainHeadingText(source: string): string {
   return source
+    .replace(AUTOLINK, "$1")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<\/?[A-Za-z][^>]*>/g, "")
     .replace(/(\*\*|__|\*|_|~~|`)(.+?)\1/g, "$2")
     .replace(/\\([\\`*_{}[\]()#+\-.!~|<>])/g, "$1")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, name: string) => {
+      if (name[0] !== "#") return ENTITIES[name.toLowerCase()] ?? match;
+      const code =
+        name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    })
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -34,16 +53,20 @@ export function buildMarkdownOutline(
   const entries: MarkdownOutlineEntry[] = [];
   let fence: string | null = null;
   for (const [chunkIndex, chunk] of chunks.entries()) {
-    let ordinal = 0;
-    const text = chunkIndex === 0 ? chunk.text.replace(FRONTMATTER, "") : chunk.text;
-    const lines = text.split(/\r\n|\r|\n/);
+    const seen = new Map<string, number>();
+    const push = (level: number, text: string) => {
+      if (!text) return;
+      const occurrence = seen.get(text) ?? 0;
+      seen.set(text, occurrence + 1);
+      entries.push({ level, text, chunkIndex, occurrence });
+    };
+    const text = chunkIndex === 0 ? maskMarkdownFrontmatter(chunk.text) : chunk.text;
     /** The open paragraph, which a setext underline turns into a heading. */
     let previous: string | null = null;
-    for (const line of lines) {
+    for (const line of text.split(/\r\n|\r|\n/)) {
       if (fence !== null) {
-        const close = FENCE_OPEN.exec(line);
+        const close = FENCE_CLOSE.exec(line);
         if (close && close[1]![0] === fence[0] && close[1]!.length >= fence.length) fence = null;
-        previous = null;
         continue;
       }
       const open = FENCE_OPEN.exec(line);
@@ -54,25 +77,13 @@ export function buildMarkdownOutline(
       }
       const atx = ATX_HEADING.exec(line);
       if (atx) {
-        const headingText = plainHeadingText(atx[2] ?? "");
-        if (headingText) {
-          entries.push({ level: atx[1]!.length, text: headingText, chunkIndex, ordinal });
-        }
-        // An empty "#" still renders an h1, so it still takes an ordinal.
-        ordinal += 1;
+        push(atx[1]!.length, plainHeadingText(atx[2] ?? ""));
         previous = null;
         continue;
       }
       const setext = SETEXT_UNDERLINE.exec(line);
       if (setext && previous !== null) {
-        const headingText = plainHeadingText(previous);
-        entries.push({
-          level: setext[1]![0] === "=" ? 1 : 2,
-          text: headingText,
-          chunkIndex,
-          ordinal,
-        });
-        ordinal += 1;
+        push(setext[1]![0] === "=" ? 1 : 2, plainHeadingText(previous));
         previous = null;
         continue;
       }
@@ -81,4 +92,18 @@ export function buildMarkdownOutline(
     }
   }
   return entries;
+}
+
+/** Finds an entry among a chunk's rendered headings by its text, so skipped headings cannot shift it. */
+export function findRenderedHeading(
+  chunkElement: Element,
+  entry: MarkdownOutlineEntry,
+): HTMLElement | null {
+  let remaining = entry.occurrence;
+  for (const heading of chunkElement.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) {
+    if ((heading.textContent ?? "").replace(/\s+/g, " ").trim() !== entry.text) continue;
+    if (remaining === 0) return heading;
+    remaining -= 1;
+  }
+  return null;
 }

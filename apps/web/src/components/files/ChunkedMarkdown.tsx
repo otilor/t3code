@@ -12,7 +12,11 @@ import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
-import { buildMarkdownOutline, type MarkdownOutlineEntry } from "./markdownOutline";
+import {
+  buildMarkdownOutline,
+  findRenderedHeading,
+  type MarkdownOutlineEntry,
+} from "./markdownOutline";
 import { MarkdownOutlineRail } from "./MarkdownOutlineRail";
 import {
   buildMarkdownFootnotesSection,
@@ -31,7 +35,6 @@ const FOOTNOTE_TARGET_ID = /^fn-\d+$/;
 const FOOTNOTE_REF_ID = /^fnref-(\d+)(?:-(\d+))?$/;
 /** A heading counts as the current section once it is this close to the top. */
 const ACTIVE_HEADING_OFFSET_PX = 48;
-const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
 
 const CHUNK_FOOTNOTES_OMIT: MarkdownExtensions = { footnotes: "omit" };
 const CHUNK_FOOTNOTES_OMIT_SEEDED: MarkdownExtensions = { footnotes: "omit-seeded" };
@@ -101,11 +104,12 @@ export function ChunkedMarkdown(props: {
   const [activeHeading, setActiveHeading] = useState(0);
   const activeFrameRef = useRef<number | null>(null);
 
-  const findHeading = (entry: MarkdownOutlineEntry): HTMLElement | null =>
-    containerRef.current
-      ?.querySelector(`[data-markdown-chunk="${entry.chunkIndex}"]`)
-      ?.querySelectorAll<HTMLElement>(HEADING_SELECTOR)
-      .item(entry.ordinal) ?? null;
+  const findHeading = (entry: MarkdownOutlineEntry): HTMLElement | null => {
+    const chunk = containerRef.current?.querySelector(
+      `[data-markdown-chunk="${entry.chunkIndex}"]`,
+    );
+    return chunk ? findRenderedHeading(chunk, entry) : null;
+  };
 
   const updateActiveHeading = () => {
     const container = containerRef.current;
@@ -120,7 +124,12 @@ export function ChunkedMarkdown(props: {
         continue;
       }
       const heading = findHeading(entry);
-      if (!heading || heading.getBoundingClientRect().top > threshold) break;
+      // A heading the source scan read differently from the renderer is skipped, not guessed.
+      if (!heading) {
+        if (entry.chunkIndex > list.end) break;
+        continue;
+      }
+      if (heading.getBoundingClientRect().top > threshold) break;
       active = index;
     }
     setActiveHeading(active);

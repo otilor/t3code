@@ -40,7 +40,7 @@ export function MarkdownOutlineRail(props: {
         >
           {props.entries.map((entry, index) => (
             <span
-              key={`${entry.chunkIndex}:${entry.ordinal}`}
+              key={`${entry.chunkIndex}:${entry.occurrence}:${entry.text}`}
               className={cn(
                 "h-0.5 shrink-0 rounded-full transition-[width,background-color] duration-200 ease-out motion-reduce:transition-none",
                 index === props.activeIndex
@@ -52,13 +52,14 @@ export function MarkdownOutlineRail(props: {
         </div>
         <div
           ref={panelRef}
-          className="invisible absolute top-0 left-0 max-h-[70vh] w-72 origin-top-left scale-95 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground opacity-0 shadow-lg transition-[opacity,scale,visibility] duration-150 ease-out group-focus-within:visible group-focus-within:scale-100 group-focus-within:opacity-100 group-hover:visible group-hover:scale-100 group-hover:opacity-100 motion-reduce:transition-none"
+          // Hidden by opacity, not visibility, so Tab still reaches the headings and opens the panel.
+          className="pointer-events-none absolute top-0 left-0 max-h-[70vh] w-72 origin-top-left scale-95 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground opacity-0 shadow-lg transition-[opacity,scale] duration-150 ease-out group-focus-within:pointer-events-auto group-focus-within:scale-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 motion-reduce:transition-none"
         >
           {props.entries.map((entry, index) => {
             const active = index === props.activeIndex;
             return (
               <button
-                key={`${entry.chunkIndex}:${entry.ordinal}`}
+                key={`${entry.chunkIndex}:${entry.occurrence}:${entry.text}`}
                 type="button"
                 data-active={active || undefined}
                 aria-current={active ? "location" : undefined}
